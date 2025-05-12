@@ -6,6 +6,7 @@ mod clone {
     pub mod ssh;
 }
 use clone::ssh::SSHClient;
+use tauri::{Manager, Window};
 
 /// 挨拶を返すコマンド
 /// 
@@ -48,23 +49,41 @@ fn get_current_datetime() -> String {
 /// 
 /// # 引数
 /// 
+/// * `window` - Tauriウィンドウオブジェクト（イベント発行用）
 /// * `host` - 接続先ホスト名
 /// * `user` - ユーザー名
 /// * `password` - パスワード
 /// 
 /// # 戻り値
 /// 
-/// * `Ok(String)` - 接続成功メッセージ
-/// * `Err(String)` - 接続失敗またはエラーメッセージ
-#[tauri::command]
-fn test_ssh_connection(host: &str, user: &str, password: &str) -> Result<String, String> {
-    let ssh_client = SSHClient::new(user, host, password);
-    
-    match ssh_client.check_connection() {
-        Ok(true) => Ok(format!("SSH接続テスト成功: {}@{} に接続できます", user, host)),
-        Ok(false) => Err(format!("SSH接続テスト失敗: {}@{} に接続できません", user, host)),
-        Err(e) => Err(format!("SSH接続テストエラー: {}", e)),
-    }
+/// * `()` - 処理は非同期で行われ、結果はイベントで通知される
+#[tauri::command(async)]
+async fn test_ssh_connection(window: Window, host: String, user: String, password: String) {
+    // 処理を別スレッドに移動して、UIスレッドをブロックしないようにする
+    std::thread::spawn(move || {
+        let ssh_client = SSHClient::new(&user, &host, &password);
+        
+        // 固定で5秒のタイムアウトを設定
+        let timeout_secs = Some(5);
+        
+        // 「テスト開始」イベントを送信
+        window.emit("ssh-test-progress", "開始").unwrap();
+        
+        // 進捗状況を定期的に送信するためのタイマーを設定
+        let start_time = std::time::Instant::now();
+        
+        let result = match ssh_client.check_connection(timeout_secs) {
+            Ok(true) => Ok(format!("SSH接続テスト成功: {}@{} に接続できます", user, host)),
+            Ok(false) => Err(format!("SSH接続テスト失敗: {}@{} に5秒以内に接続できませんでした", user, host)),
+            Err(e) => Err(format!("SSH接続テストエラー: {}", e)),
+        };
+        
+        // 「テスト完了」イベントを送信
+        match result {
+            Ok(msg) => window.emit("ssh-test-completed", msg).unwrap(),
+            Err(msg) => window.emit("ssh-test-failed", msg).unwrap(),
+        }
+    });
 }
 
 fn main() {
@@ -75,6 +94,10 @@ fn main() {
             get_current_datetime,
             test_ssh_connection
         ])
+        .setup(|app| {
+            // アプリケーションのセットアップコード（必要に応じて）
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

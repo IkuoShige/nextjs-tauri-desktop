@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
+import { listen } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,6 +27,56 @@ export function TauriCommands() {
   const [sshResult, setSSHResult] = useState("");
   const [isTestingSSH, setIsTestingSSH] = useState(false);
   const [sshError, setSSHError] = useState(false);
+  const [progressDots, setProgressDots] = useState(""); // 進捗ドット
+
+  // イベントリスナーを登録
+  useEffect(() => {
+    // 進捗ドットアニメーションのインターバルID
+    let dotsIntervalId: NodeJS.Timeout | null = null;
+
+    // SSH接続テストの進捗イベントをリッスン
+    const progressUnlisten = listen("ssh-test-progress", (event) => {
+      // 進捗メッセージを表示
+      const message = event.payload as string;
+      setSSHResult(`接続テスト${message}（5秒でタイムアウト）...`);
+    });
+
+    // SSH接続テスト成功イベントをリッスン
+    const completedUnlisten = listen("ssh-test-completed", (event) => {
+      const result = event.payload as string;
+      setSSHResult(result);
+      setSSHError(false);
+      setIsTestingSSH(false);
+      if (dotsIntervalId) {
+        clearInterval(dotsIntervalId);
+        dotsIntervalId = null;
+      }
+      setProgressDots("");
+    });
+
+    // SSH接続テスト失敗イベントをリッスン
+    const failedUnlisten = listen("ssh-test-failed", (event) => {
+      const error = event.payload as string;
+      setSSHResult(error);
+      setSSHError(true);
+      setIsTestingSSH(false);
+      if (dotsIntervalId) {
+        clearInterval(dotsIntervalId);
+        dotsIntervalId = null;
+      }
+      setProgressDots("");
+    });
+
+    // コンポーネントがアンマウントされたときにリスナーをクリーンアップ
+    return () => {
+      progressUnlisten.then(fn => fn());
+      completedUnlisten.then(fn => fn());
+      failedUnlisten.then(fn => fn());
+      if (dotsIntervalId) {
+        clearInterval(dotsIntervalId);
+      }
+    };
+  }, []);
 
   /**
    * 挨拶機能を実行する関数
@@ -53,22 +104,34 @@ export function TauriCommands() {
    */
   async function testSSHConnection() {
     setIsTestingSSH(true);
-    setSSHResult("テスト中...");
+    setSSHResult(`接続テスト開始（5秒でタイムアウト）...`);
     setSSHError(false);
+    setProgressDots("");
+    
+    // 進捗表示の更新用インターバル
+    const intervalId = setInterval(() => {
+      setProgressDots(prev => {
+        if (prev.length >= 3) return ".";
+        return prev + ".";
+      });
+    }, 500);
 
     try {
-      const result = await invoke("test_ssh_connection", {
+      // 非同期コマンドを呼び出す（戻り値は使用しない）
+      await invoke("test_ssh_connection", {
         host: hostname,
         user: username,
-        password: password,
+        password: password
       });
-      setSSHResult(result as string);
-      setSSHError(false);
+      // 注意: 結果はイベントリスナーで処理されるため、ここでは何もしない
     } catch (error) {
-      setSSHResult(error as string);
+      // 呼び出しエラーの場合（イベントとは別）
+      console.error("コマンド呼び出しエラー:", error);
+      setSSHResult(`コマンド呼び出しエラー: ${error}`);
       setSSHError(true);
-    } finally {
       setIsTestingSSH(false);
+      clearInterval(intervalId);
+      setProgressDots("");
     }
   }
 
@@ -159,12 +222,12 @@ export function TauriCommands() {
             disabled={isTestingSSH}
             className="mt-2"
           >
-            {isTestingSSH ? "テスト中..." : "SSH接続をテスト"}
+            {isTestingSSH ? `テスト中${progressDots}` : "SSH接続をテスト"}
           </Button>
           
           {sshResult && (
-            <div className={`p-2 rounded mt-2 ${sshError ? "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400" : "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400"}`}>
-              {sshResult}
+            <div className={`p-2 rounded mt-2 ${isTestingSSH ? "bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400" : (sshError ? "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400" : "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400")}`}>
+              {sshResult}{isTestingSSH ? progressDots : ""}
             </div>
           )}
         </div>
